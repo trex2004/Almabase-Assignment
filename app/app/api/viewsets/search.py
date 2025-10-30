@@ -6,11 +6,17 @@ from app.serializers import output
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.contrib.postgres.search import TrigramSimilarity
+from django.db.models import F
+from django.db.models.functions import Greatest
+from itertools import groupby
+from rest_framework.pagination import LimitOffsetPagination
+
 
 def get_query_type(query):
     query_type_map = {
         'phone_number': lambda q: q[0].isdigit(),
-        'name': lambda q: not q[0].isdigit()
+        'full_name': lambda q: not q[0].isdigit()
     }
     try:
         for query_type, condition in query_type_map.items():
@@ -20,61 +26,58 @@ def get_query_type(query):
         return None
 
 
+
 class SearchView(APIView):
-    permission_classems = (IsAuthenticated,)
+    permission_classes = (IsAuthenticated,)
     authentication_classes = (JWTAuthentication,)
     output_serializer_class = output.SearchOutputSerializer
 
     def get(self, request):
-        query = request.query_params.get('q', None)
+        query = request.query_params.get("q", "").strip()
+        if not query:
+            return Response({"error": "Search query is required."}, status=400)
+
         results = []
 
-        search_type = get_query_type(query)
+        if query.isdigit():
+            users = User.objects.filter(phone_number__icontains=query)
+            contacts = Contact.objects.filter(phone_number__icontains=query)
+            results = list(users) + list(contacts)
 
-        if not query:
-            return Response({'error': 'Search query is required.'}, status=400)
-        
-        if search_type == 'phone_number':
-            user_exact_matches = User.objects.filter(phone_number=query)
+        else:
+            user_qs = User.objects.annotate(
+                sim_first=TrigramSimilarity("first_name", query),
+                sim_last=TrigramSimilarity("last_name", query),
+            ).annotate(
+                similarity=Greatest(F("sim_first"), F("sim_last"))
+            ).filter(similarity__gt=0.2)
 
-            if user_exact_matches.exists():
-                results = user_exact_matches
-            
-            else:
-                contact_exact_matches = Contact.objects.filter(phone_number=query)
-                if contact_exact_matches.exists():
-                    results = contact_exact_matches
+            contact_qs = Contact.objects.annotate(
+                sim_first=TrigramSimilarity("first_name", query),
+                sim_last=TrigramSimilarity("last_name", query),
+            ).annotate(
+                similarity=Greatest(F("sim_first"), F("sim_last"))
+            ).filter(similarity__gt=0.2)
 
-        elif search_type == 'full_name':
-            user_starts_with = User.objects.filter(
-                Q(first_name__istartswith=query) | Q(last_name__istartswith=query)
-            )
-            user_contains = User.objects.filter(
-                Q(first_name__icontains=query) | Q(last_name__icontains=query)
-            ).exclude(
-                Q(first_name__istartswith=query) | Q(last_name__istartswith=query)
-            )
+            results = list(user_qs.order_by("-similarity")) + list(contact_qs.order_by("-similarity"))
 
+        print("Total results before deduplication:", results)
 
-            contact_starts_with = Contact.objects.filter(
-                Q(first_name__istartswith=query) | Q(last_name__istartswith=query)
-            )
-            contact_contains = Contact.objects.filter(
-                Q(first_name__icontains=query) | Q(last_name__icontains=query)
-            ).exclude(
-                Q(first_name__istartswith=query) | Q(last_name__istartswith=query)
-            )
+        unique = {}
+        for r in results:
+            phone = getattr(r, "phone_number", None)
+            if phone and phone not in unique:
+                unique[phone] = r
+        results = list(unique.values())
 
-            results = list(user_starts_with) + list(contact_starts_with) + list(user_contains) + list(contact_contains)
+        paginator = LimitOffsetPagination()
+        paginated = paginator.paginate_queryset(results, request)
+        serializer = self.output_serializer_class(paginated, many=True)
 
-        
-        if isinstance(query, str) and query.strip() == '' and not results:
-            results = list(User.objects.all()[:1])
-
-        output_serializer = self.output_serializer_class(results, many=True)
-
-        return Response(output_serializer.data)
-
+        return Response({
+            "count": len(results),
+            "results": serializer.data,
+        })
         
 
 class SearchDetailsView(APIView):
@@ -84,15 +87,17 @@ class SearchDetailsView(APIView):
     output_contact_serializer_class = output.ContactOutputSerializer
 
     def get(self, request, id):
-        user = User.objects.get(id=id)
+        user = User.objects.filter(id=id).first()
         if user:
             is_contact_of_user = user.created_contacts.filter(created_by=request.user).exists()
             if is_contact_of_user:
                 user.email = None
-
             output_serializer = self.output_user_serializer_class(user)
             return Response(output_serializer.data)
-        else:
-            contact = Contact.objects.get(id=id)        
+
+        contact = Contact.objects.filter(id=id).first()
+        if contact:
             output_serializer = self.output_contact_serializer_class(contact)
             return Response(output_serializer.data)
+
+        return Response({'error': 'Not found'}, status=404)

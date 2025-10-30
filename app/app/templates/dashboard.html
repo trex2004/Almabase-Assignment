@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Interaction Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 24px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .logout-btn {
+            background: #d9534f;
+            color: #fff;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .logout-btn:hover {
+            background: #c9302c;
+        }
+
+        .row {
+            display: flex;
+            gap: 24px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+
+        .col {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .card {
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #fafafa;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: left;
+        }
+
+        #topContactsChart,
+        #spamChart {
+            width: 100% !important;
+            height: 300px !important;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Dashboard — {{ user_full_name }}</h1>
+        <button class="logout-btn" onclick="logout()">Logout</button>
+    </header>
+
+    <div class="row">
+        <div class="col card">
+            <h3>Recent Interactions</h3>
+            <table id="recent-table">
+                <thead>
+                    <tr>
+                        <th>Initiator</th>
+                        <th>Receiver</th>
+                        <th>Type</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="col card">
+            <h3>Top Contacts</h3>
+            <canvas id="topContactsChart"></canvas>
+        </div>
+
+        <div class="col card">
+            <h3>Spam Reports</h3>
+            <canvas id="spamChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const userId = localStorage.getItem("user_id");
+        const userName = localStorage.getItem("full_name");
+        const token = localStorage.getItem("access_token");
+
+        if (!token || !userId) {
+            alert("You are not logged in. Redirecting to login...");
+            window.location.href = "/login/";
+        }
+
+        document.querySelector("h1").textContent =
+            `Dashboard — ${userName && userName.trim() ? userName : "User"}`;
+
+        function logout() {
+            localStorage.clear();
+            alert("Logged out successfully.");
+            window.location.href = "/login/";
+        }
+
+        async function fetchData() {
+            const headers = {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
+            };
+
+            try {
+                const [recentRes, topRes, spamRes] = await Promise.all([
+                    fetch(`/api/interactions/recent/${userId}?limit=10`, { headers }).then(r => r.json()),
+                    fetch(`/api/interactions/top/${userId}`, { headers }).then(r => r.json()),
+                    fetch(`/api/interactions/spam`, { headers }).then(r => r.json())
+                ]);
+
+                renderRecent(recentRes.results || []);
+                renderTop(topRes || []);
+                renderSpam(spamRes || []);
+            } catch (err) {
+                console.error("Failed to load data:", err);
+            }
+        }
+
+        function renderRecent(data) {
+            const tbody = document.querySelector("#recent-table tbody");
+            tbody.innerHTML = "";
+            if (!data.length) {
+                tbody.innerHTML = "<tr><td colspan='4'>No interactions found</td></tr>";
+                return;
+            }
+            data.forEach(r => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                <td>${r.initiator_name || "—"}</td>
+                <td>${r.receiver_name || "—"}</td>
+                <td>${r.interaction_type}</td>
+                <td>${new Date(r.timestamp).toLocaleString()}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderTop(data) {
+            const labels = data.map(x => x.receiver__first_name || x.receiver__phone_number);
+            const counts = data.map(x => x.interaction_count);
+            const ctx = document.getElementById("topContactsChart").getContext("2d");
+            new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels,
+                    datasets: [{
+                        label: "Interactions",
+                        data: counts,
+                        backgroundColor: "steelblue"
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        function renderSpam(data) {
+            const labels = data.map(x => x.receiver__phone_number);
+            const counts = data.map(x => x.report_count);
+            const ctx = document.getElementById("spamChart").getContext("2d");
+            new Chart(ctx, {
+                type: "pie",
+                data: {
+                    labels,
+                    datasets: [{
+                        data: counts,
+                        backgroundColor: ["#f66", "#fc3", "#9c6", "#6cf", "#ccc"]
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        fetchData();
+    </script>
+</body>
+
+</html>

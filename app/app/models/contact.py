@@ -14,6 +14,14 @@ class Contact(TimeStampModelMixin):
         full_name = "%s %s" % (self.first_name, self.last_name)
         return full_name.strip()
 
+    def save(self, *args, **kwargs):
+        number = self.phone_number.strip().replace(" ", "")
+        if not number.startswith("+"):
+            number = "+91" + number 
+        self.phone_number = number
+        super().save(*args, **kwargs)
+
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
