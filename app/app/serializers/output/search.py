@@ -4,27 +4,34 @@ from app.models.contact import Contact
 from app.models.scam import ScamRecord
 
 class SearchOutputSerializer(serializers.Serializer):
-    id = serializers.IntegerField()
+    id = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     is_registered = serializers.SerializerMethodField()
     spammed_by_count = serializers.SerializerMethodField()
-    phone_number = serializers.CharField()
+    phone_number = serializers.SerializerMethodField()
+
+    def get_id(self, obj):
+        return str(getattr(obj, "id", None))
 
     def get_name(self, obj):
-        if isinstance(obj, User) or isinstance(obj, Contact):
-            return obj.get_full_name()
+        if isinstance(obj, (User, Contact)):
+            full_name = getattr(obj, "get_full_name", lambda: None)()
+            if full_name:
+                return full_name
+            return f"{getattr(obj, 'first_name', '')} {getattr(obj, 'last_name', '')}".strip()
+        return None
 
     def get_is_registered(self, obj):
         return isinstance(obj, User)
 
     def get_spammed_by_count(self, obj):
-        if isinstance(obj, User) or isinstance(obj, Contact):
-            phone_number = obj.phone_number
-        else:
+        phone = getattr(obj, "phone_number", None)
+        if not phone:
             return 0
-        
-        return ScamRecord.objects.filter(phone_number=phone_number).count()
-    
+        return ScamRecord.objects.filter(phone_number=phone).count()
+
+    def get_phone_number(self, obj):
+        return getattr(obj, "phone_number", None)    
 
 class SearchDetailsUserOutputSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
